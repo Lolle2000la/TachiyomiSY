@@ -34,7 +34,6 @@ import kotlin.system.measureTimeMillis
 private enum class ChapterSyncState {
     LOCAL_IS_NEWER,
     REMOTE_IS_NEWER,
-    SYNC_IN_BOTH_DIRECTIONS,
     NO_CHANGES,
 }
 
@@ -257,7 +256,7 @@ class SyncManager(
         // If chapters are different, we need to sync.
         if (chapterSyncState != ChapterSyncState.NO_CHANGES) {
             // If the remote is newer or both have changes, we need to sync from remote.
-            if (chapterSyncState == ChapterSyncState.REMOTE_IS_NEWER || chapterSyncState == ChapterSyncState.SYNC_IN_BOTH_DIRECTIONS) {
+            if (chapterSyncState == ChapterSyncState.REMOTE_IS_NEWER) {
                 return true
             }
 
@@ -283,37 +282,46 @@ class SyncManager(
         localChapters: List<Chapters>,
         remoteChapters: List<BackupChapter>,
     ): ChapterSyncState {
-        val localChapterUrls = localChapters.map { it.url }.toSet()
-        val remoteChapterUrls = remoteChapters.map { it.url }.toSet()
-
-        val newChaptersInLocal = localChapterUrls - remoteChapterUrls
-        val newChaptersInRemote = remoteChapterUrls - localChapterUrls
-
-        val localIsNewer = newChaptersInLocal.isNotEmpty()
-        val remoteIsNewer = newChaptersInRemote.isNotEmpty()
-
-        if (localIsNewer && remoteIsNewer) {
-            return ChapterSyncState.SYNC_IN_BOTH_DIRECTIONS
-        }
-        if (localIsNewer) {
-            return ChapterSyncState.LOCAL_IS_NEWER
-        }
-        if (remoteIsNewer) {
-            return ChapterSyncState.REMOTE_IS_NEWER
-        }
-
-        // If there are no new chapters, check for version differences in existing chapters.
         val localChapterMap = localChapters.associateBy { it.url }
-        val remoteHasUpdatedChapter = remoteChapters.any { remoteChapter ->
-            val localChapter = localChapterMap[remoteChapter.url]
-            localChapter != null && localChapter.version < remoteChapter.version
+        val remoteChapterMap = remoteChapters.associateBy { it.url }
+
+        val localChapterUrls = localChapterMap.keys
+        val remoteChapterUrls = remoteChapterMap.keys
+
+        val localOnlyChapters = localChapterUrls - remoteChapterUrls
+        val remoteOnlyChapters = remoteChapterUrls - localChapterUrls
+
+        // Check for version differences in chapters that exist on both
+        var localHasNewerVersion = false
+        var remoteHasNewerVersion = false
+        val commonChapters = localChapterUrls.intersect(remoteChapterUrls)
+        for (url in commonChapters) {
+            val localChapter = localChapterMap[url]!!
+            val remoteChapter = remoteChapterMap[url]!!
+            if (localChapter.version > remoteChapter.version) {
+                localHasNewerVersion = true
+            } else if (remoteChapter.version > localChapter.version) {
+                remoteHasNewerVersion = true
+            }
         }
 
-        if (remoteHasUpdatedChapter) {
-            return ChapterSyncState.REMOTE_IS_NEWER
-        }
+        // If remote has chapters that local doesn't, it can mean one of two things:
+        // 1. Chapters were deleted locally. In this case, local is the newer state.
+        // 2. Chapters were added on another device. In this case, remote is the newer state.
+        //
+        // We decide that deletions take precedence. If there are no new local chapters or version updates,
+        // we assume the remote is newer. This handles additions from other devices.
+        val localHasDeletions = remoteOnlyChapters.isNotEmpty() && localOnlyChapters.isEmpty() && !localHasNewerVersion
+        val localIsNewer = localOnlyChapters.isNotEmpty() || localHasNewerVersion || localHasDeletions
 
-        return ChapterSyncState.NO_CHANGES
+        // Remote is considered newer only if it has new chapters or versions and local does not.
+        val remoteIsNewer = (remoteOnlyChapters.isNotEmpty() || remoteHasNewerVersion) && !localIsNewer
+
+        return when {
+            localIsNewer -> ChapterSyncState.LOCAL_IS_NEWER
+            remoteIsNewer -> ChapterSyncState.REMOTE_IS_NEWER
+            else -> ChapterSyncState.NO_CHANGES
+        }
     }
 
     /**
