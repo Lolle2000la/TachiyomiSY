@@ -31,6 +31,13 @@ import java.io.IOException
 import java.util.Date
 import kotlin.system.measureTimeMillis
 
+private enum class ChapterSyncState {
+    LOCAL_IS_NEWER,
+    REMOTE_IS_NEWER,
+    SYNC_IN_BOTH_DIRECTIONS,
+    NO_CHANGES,
+}
+
 /**
  * A manager to handle synchronization tasks in the app, such as updating
  * sync preferences and performing synchronization with a remote server.
@@ -245,8 +252,20 @@ class SyncManager(
         val localChapters = handler.await { chaptersQueries.getChaptersByMangaId(localManga.id, 0).executeAsList() }
         val localCategories = getCategories.await(localManga.id).map { it.order }
 
-        if (areChaptersDifferent(localChapters, remoteManga.chapters)) {
-            return true
+        val chapterSyncState = determineChapterSyncState(localChapters, remoteManga.chapters)
+
+        // If chapters are different, we need to sync.
+        if (chapterSyncState != ChapterSyncState.NO_CHANGES) {
+            // If the remote is newer or both have changes, we need to sync from remote.
+            if (chapterSyncState == ChapterSyncState.REMOTE_IS_NEWER || chapterSyncState == ChapterSyncState.SYNC_IN_BOTH_DIRECTIONS) {
+                return true
+            }
+
+            // If local is newer, we don't need to sync from remote, but we need to push to remote.
+            // This is handled by the backup creation process.
+            if (chapterSyncState == ChapterSyncState.LOCAL_IS_NEWER) {
+                return false
+            }
         }
 
         if (localManga.version != remoteManga.version) {
@@ -260,24 +279,41 @@ class SyncManager(
         return false
     }
 
-    private fun areChaptersDifferent(localChapters: List<Chapters>, remoteChapters: List<BackupChapter>): Boolean {
+    private fun determineChapterSyncState(
+        localChapters: List<Chapters>,
+        remoteChapters: List<BackupChapter>,
+    ): ChapterSyncState {
+        val localChapterUrls = localChapters.map { it.url }.toSet()
+        val remoteChapterUrls = remoteChapters.map { it.url }.toSet()
+
+        val newChaptersInLocal = localChapterUrls - remoteChapterUrls
+        val newChaptersInRemote = remoteChapterUrls - localChapterUrls
+
+        val localIsNewer = newChaptersInLocal.isNotEmpty()
+        val remoteIsNewer = newChaptersInRemote.isNotEmpty()
+
+        if (localIsNewer && remoteIsNewer) {
+            return ChapterSyncState.SYNC_IN_BOTH_DIRECTIONS
+        }
+        if (localIsNewer) {
+            return ChapterSyncState.LOCAL_IS_NEWER
+        }
+        if (remoteIsNewer) {
+            return ChapterSyncState.REMOTE_IS_NEWER
+        }
+
+        // If there are no new chapters, check for version differences in existing chapters.
         val localChapterMap = localChapters.associateBy { it.url }
-        val remoteChapterMap = remoteChapters.associateBy { it.url }
-
-        if (localChapterMap.size != remoteChapterMap.size) {
-            return true
+        val remoteHasUpdatedChapter = remoteChapters.any { remoteChapter ->
+            val localChapter = localChapterMap[remoteChapter.url]
+            localChapter != null && localChapter.version < remoteChapter.version
         }
 
-        for ((url, localChapter) in localChapterMap) {
-            val remoteChapter = remoteChapterMap[url]
-
-            // If a matching remote chapter doesn't exist, or the version numbers are different, consider them different
-            if (remoteChapter == null || localChapter.version != remoteChapter.version) {
-                return true
-            }
+        if (remoteHasUpdatedChapter) {
+            return ChapterSyncState.REMOTE_IS_NEWER
         }
 
-        return false
+        return ChapterSyncState.NO_CHANGES
     }
 
     /**
