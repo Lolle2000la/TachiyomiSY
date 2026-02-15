@@ -36,7 +36,7 @@ interface ChapterRepository {
         includeDeleted: Boolean = false,
     ): Flow<List<Chapter>>
 
-    suspend fun getChapterByUrlAndMangaId(url: String, mangaId: Long): Chapter?
+    suspend fun getChapterByUrlAndMangaId(url: String, mangaId: Long, includeDeleted: Boolean = false): Chapter?
 
     // SY -->
     suspend fun getChapterByUrl(url: String): List<Chapter>
