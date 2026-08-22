@@ -26,6 +26,7 @@ CREATE INDEX chapters_manga_id_index ON chapters(manga_id);
 CREATE INDEX chapters_unread_by_manga_index ON chapters(manga_id, read) WHERE read = 0;
 CREATE INDEX idx_chapters_url ON chapters(url);
 
+-- Initialize last_modified_at on insert if not provided (https://github.com/jobobby04/TachiyomiSY/issues/1635)
 CREATE TRIGGER insert_chapter_last_modified_at AFTER INSERT ON chapters
 BEGIN
     UPDATE chapters

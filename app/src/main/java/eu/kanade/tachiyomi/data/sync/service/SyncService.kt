@@ -137,7 +137,8 @@ abstract class SyncService(
             val local = localMangaMap[compositeKey]
             val remote = remoteMangaMap[compositeKey]
 
-            // https://github.com/jobobby04/TachiyomiSY/issues/1635
+            // Retain local manga not yet on remote and remote manga not yet local (https://github.com/jobobby04/TachiyomiSY/issues/1635).
+            // Deletions/unfavorites are tracked explicitly via `favorite = false` and reconciled during version comparison.
             when {
                 local != null && remote == null -> {
                     updateCategories(local, localCategoriesMapByOrder)
@@ -220,8 +221,9 @@ abstract class SyncService(
             "Starting chapter merge. Local chapters: ${localChapters.size}, Remote chapters: ${remoteChapters.size}"
         }
 
-        // Merge both chapter maps based on version numbers
-        // https://github.com/jobobby04/TachiyomiSY/issues/1635
+        // Merge both chapter maps based on version numbers.
+        // Local chapters not yet on remote are always kept (e.g. newly added manga or source updates, issue #1635).
+        // Remote chapters missing locally are only kept if newly added after lastSyncTime (tombstone detection).
         val mergedChapters = (localChapterMap.keys + remoteChapterMap.keys).distinct().mapNotNull { compositeKey ->
             val localChapter = localChapterMap[compositeKey]
             val remoteChapter = remoteChapterMap[compositeKey]
