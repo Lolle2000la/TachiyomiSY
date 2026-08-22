@@ -37,7 +37,7 @@ abstract class SyncService(
      * @param remoteSyncData The SData containing the remote sync data.
      * @return The JSON string containing the merged sync data.
      */
-    protected fun mergeSyncData(localSyncData: SyncData, remoteSyncData: SyncData): SyncData {
+    internal fun mergeSyncData(localSyncData: SyncData, remoteSyncData: SyncData): SyncData {
         val mergedCategoriesList =
             mergeCategoriesLists(localSyncData.backup?.backupCategories, remoteSyncData.backup?.backupCategories)
 
@@ -94,7 +94,7 @@ abstract class SyncService(
      * @param remoteMangaList The list of remote BackupManga objects or null.
      * @return A list of BackupManga objects, each representing the most recent version of the manga from either local or remote sources.
      */
-    private fun mergeMangaLists(
+    internal fun mergeMangaLists(
         localMangaList: List<BackupManga>?,
         remoteMangaList: List<BackupManga>?,
         localCategories: List<BackupCategory>,
@@ -130,10 +130,6 @@ abstract class SyncService(
             }
         }
 
-        logcat(LogPriority.DEBUG, logTag) {
-            "Starting merge. Local list size: ${localMangaListSafe.size}, Remote list size: ${remoteMangaListSafe.size}"
-        }
-
         val lastSyncTime = syncPreferences.lastSyncTimestamp.get().milliseconds.inWholeSeconds
         val syncOptions = syncPreferences.getSyncSettings()
 
@@ -141,25 +137,15 @@ abstract class SyncService(
             val local = localMangaMap[compositeKey]
             val remote = remoteMangaMap[compositeKey]
 
-            // New version comparison logic
+            // https://github.com/jobobby04/TachiyomiSY/issues/1635
             when {
                 local != null && remote == null -> {
-                    if (lastSyncTime == 0L || local.lastModifiedAt > lastSyncTime) {
-                        updateCategories(local, localCategoriesMapByOrder)
-                        local
-                    } else {
-                        logcat(LogPriority.DEBUG, logTag) { "Dropping local manga deleted on remote: ${local.title}." }
-                        null
-                    }
+                    updateCategories(local, localCategoriesMapByOrder)
+                    local
                 }
                 local == null && remote != null -> {
-                    if (lastSyncTime == 0L || remote.lastModifiedAt > lastSyncTime) {
-                        updateCategories(remote, remoteCategoriesMapByOrder)
-                        remote
-                    } else {
-                        logcat(LogPriority.DEBUG, logTag) { "Dropping deleted remote manga: ${remote.title}." }
-                        null
-                    }
+                    updateCategories(remote, remoteCategoriesMapByOrder)
+                    remote
                 }
                 local != null && remote != null -> {
                     // Compare versions to decide which manga to keep
@@ -211,7 +197,7 @@ abstract class SyncService(
      * - If lastModifiedAt is null or missing, the chapter is considered the oldest for safety, ensuring that any chapter with a valid timestamp is preferred.
      * - The resulting list contains the most recent chapters from the combined set of local and remote chapters.
      */
-    private fun mergeChapters(
+    internal fun mergeChapters(
         localChapters: List<BackupChapter>,
         remoteChapters: List<BackupChapter>,
         lastSyncTime: Long,
@@ -235,6 +221,7 @@ abstract class SyncService(
         }
 
         // Merge both chapter maps based on version numbers
+        // https://github.com/jobobby04/TachiyomiSY/issues/1635
         val mergedChapters = (localChapterMap.keys + remoteChapterMap.keys).distinct().mapNotNull { compositeKey ->
             val localChapter = localChapterMap[compositeKey]
             val remoteChapter = remoteChapterMap[compositeKey]
@@ -246,13 +233,8 @@ abstract class SyncService(
 
             when {
                 localChapter != null && remoteChapter == null -> {
-                    if (lastSyncTime == 0L || localChapter.lastModifiedAt > lastSyncTime) {
-                        logcat(LogPriority.DEBUG, logTag) { "Keeping local chapter: ${localChapter.name}." }
-                        localChapter
-                    } else {
-                        logcat(LogPriority.DEBUG, logTag) { "Dropping local chapter deleted on remote: ${localChapter.name}." }
-                        null
-                    }
+                    logcat(LogPriority.DEBUG, logTag) { "Keeping local chapter: ${localChapter.name}." }
+                    localChapter
                 }
                 localChapter == null && remoteChapter != null -> {
                     if (lastSyncTime == 0L || remoteChapter.lastModifiedAt > lastSyncTime) {
@@ -266,7 +248,7 @@ abstract class SyncService(
                 localChapter != null && remoteChapter != null -> {
                     // Use version number to decide which chapter to keep
                     val chosenChapter = if (localChapter.version >= remoteChapter.version) {
-                        // If there mare more chapter on remote, local sourceOrder will need to be updated to maintain correct source order.
+                        // If there are more chapters on remote, local sourceOrder will need to be updated to maintain correct source order.
                         if (localChapters.size < remoteChapters.size) {
                             localChapter.sourceOrder = remoteChapter.sourceOrder
                             localChapter

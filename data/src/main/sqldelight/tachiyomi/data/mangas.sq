@@ -38,6 +38,14 @@ CREATE INDEX library_favorite_index ON mangas(favorite) WHERE favorite = 1;
 CREATE INDEX mangas_url_index ON mangas(url);
 CREATE INDEX idx_mangas_source ON mangas(source);
 
+CREATE TRIGGER insert_manga_last_modified_at AFTER INSERT ON mangas
+BEGIN
+    UPDATE mangas
+    SET last_modified_at = CASE WHEN last_modified_at = 0 THEN strftime('%s', 'now') ELSE last_modified_at END,
+        favorite_modified_at = CASE WHEN favorite = 1 AND favorite_modified_at IS NULL THEN strftime('%s', 'now') ELSE favorite_modified_at END
+    WHERE _id = new._id;
+END;
+
 CREATE TRIGGER update_last_favorited_at_mangas
 AFTER UPDATE OF favorite ON mangas
 BEGIN
@@ -103,7 +111,7 @@ FROM mangas;
 getMangasWithFavoriteTimestamp:
 SELECT *
 FROM mangas
-WHERE favorite_modified_at IS NOT NULL;
+WHERE favorite = 1 OR favorite_modified_at IS NOT NULL;
 
 getSourceIdWithFavoriteCount:
 SELECT
