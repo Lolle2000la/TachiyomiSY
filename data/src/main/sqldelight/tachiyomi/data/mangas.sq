@@ -43,8 +43,12 @@ CREATE INDEX idx_mangas_source ON mangas(source);
 -- issues an UPDATE is chained into the unconditional `update_last_modified_at_mangas` trigger below,
 -- which would overwrite whatever value was inserted.
 -- See https://github.com/jobobby04/TachiyomiSY/issues/1635.
+-- `mangasQueries.update` always lists `favorite = coalesce(:favorite, favorite)`, so an AFTER UPDATE
+-- OF favorite trigger would otherwise fire on every unrelated write and reset the timestamp.
+-- Only an actual change of the favorite flag counts as "the user favorited/unfavorited this".
 CREATE TRIGGER update_last_favorited_at_mangas
 AFTER UPDATE OF favorite ON mangas
+WHEN new.favorite != old.favorite
 BEGIN
   UPDATE mangas
   SET favorite_modified_at = strftime('%s', 'now')

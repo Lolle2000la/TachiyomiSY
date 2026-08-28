@@ -24,6 +24,20 @@ BEGIN SELECT CASE
     END;
 END;
 
+-- The update_last_favorited_at_mangas trigger fired on every unrelated write to a manga, because
+-- mangasQueries.update always lists `favorite = coalesce(:favorite, favorite)` and SQLite's
+-- AFTER UPDATE OF favorite does not care whether the value changed. That made favorite_modified_at
+-- useless as a "the favourite flag actually changed" marker. Recreate it with a WHEN guard.
+DROP TRIGGER IF EXISTS update_last_favorited_at_mangas;
+CREATE TRIGGER update_last_favorited_at_mangas
+AFTER UPDATE OF favorite ON mangas
+WHEN new.favorite != old.favorite
+BEGIN
+  UPDATE mangas
+  SET favorite_modified_at = strftime('%s', 'now')
+  WHERE _id = new._id;
+END;
+
 -- NOTE: mangas_categories.last_modified_at and its update_last_modified_at_mangas_categories
 -- trigger are intentionally *not* dropped here. 28.sqm added them to databases that already
 -- existed, but cdb07c893 later removed them from mangas_categories.sq without a matching

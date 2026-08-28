@@ -68,7 +68,7 @@ class SyncYomiSyncService(
                 logcat(LogPriority.DEBUG, "SyncService") {
                     "Try update remote data with ETag($etag)"
                 }
-                mergeSyncData(syncData, remoteData)
+                syncMerger.mergeSyncData(syncData, remoteData)
             } else {
                 // init or overwrite remote data
                 logcat(LogPriority.DEBUG) {

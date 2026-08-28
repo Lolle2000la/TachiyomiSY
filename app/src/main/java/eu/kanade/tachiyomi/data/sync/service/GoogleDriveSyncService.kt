@@ -88,7 +88,7 @@ class GoogleDriveSyncService(context: Context, json: Json, syncPreferences: Sync
                     syncData.backup
                 } else {
                     // Merge the local and remote sync data
-                    val mergedSyncData = mergeSyncData(syncData, remoteSData)
+                    val mergedSyncData = syncMerger.mergeSyncData(syncData, remoteSData)
                     pushSyncData(mergedSyncData)
                     mergedSyncData.backup
                 }

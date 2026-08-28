@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.data.sync.service
 
-import android.content.Context
 import eu.kanade.domain.sync.SyncPreferences
 import eu.kanade.domain.sync.models.SyncSettings
 import eu.kanade.tachiyomi.data.backup.models.Backup
@@ -12,13 +11,12 @@ import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.mockk.every
 import io.mockk.mockk
-import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import tachiyomi.core.common.preference.Preference
 
 /**
- * Tests for the merge rules in [SyncService].
+ * Tests for the merge rules in [SyncMerger].
  *
  * Units: `SyncPreferences.lastSyncTimestamp` stores milliseconds, while `lastModifiedAt` on the
  * backup models is in seconds (it mirrors the `last_modified_at` column, which is written with
@@ -29,19 +27,11 @@ import tachiyomi.core.common.preference.Preference
  * than the last sync, because that is what mangas.sq/chapters.sq guarantee: every insert stamps
  * `last_modified_at`. See https://github.com/jobobby04/TachiyomiSY/issues/1635.
  */
-class SyncServiceTest {
+class SyncMergerTest {
 
     private lateinit var syncPreferences: SyncPreferences
     private lateinit var lastSyncTimestampPref: Preference<Long>
-    private lateinit var syncService: TestSyncService
-
-    class TestSyncService(
-        context: Context,
-        json: Json,
-        syncPreferences: SyncPreferences,
-    ) : SyncService(context, json, syncPreferences) {
-        override suspend fun doSync(syncData: SyncData): Backup? = null
-    }
+    private lateinit var syncMerger: SyncMerger
 
     @BeforeEach
     fun setUp() {
@@ -56,9 +46,7 @@ class SyncServiceTest {
         )
         every { syncPreferences.uniqueDeviceID() } returns "test-device-id"
 
-        val context = mockk<Context>(relaxed = true)
-        val json = Json { ignoreUnknownKeys = true }
-        syncService = TestSyncService(context, json, syncPreferences)
+        syncMerger = SyncMerger(syncPreferences)
     }
 
     /**
@@ -79,7 +67,7 @@ class SyncServiceTest {
             version = 1L,
         )
 
-        val merged = syncService.mergeMangaLists(
+        val merged = syncMerger.mergeMangaLists(
             localMangaList = listOf(localManga),
             remoteMangaList = emptyList(),
             localCategories = emptyList(),
@@ -110,7 +98,7 @@ class SyncServiceTest {
             version = 1L,
         )
 
-        val merged = syncService.mergeMangaLists(
+        val merged = syncMerger.mergeMangaLists(
             localMangaList = listOf(staleLocalManga),
             remoteMangaList = emptyList(),
             localCategories = emptyList(),
@@ -129,7 +117,7 @@ class SyncServiceTest {
     fun testMergeMangaLists_staleRemoteMangaDroppedWhenDeletedLocally() {
         every { lastSyncTimestampPref.get() } returns LAST_SYNC_MILLIS
 
-        val merged = syncService.mergeMangaLists(
+        val merged = syncMerger.mergeMangaLists(
             localMangaList = emptyList(),
             remoteMangaList = listOf(
                 BackupManga(
@@ -162,7 +150,7 @@ class SyncServiceTest {
             version = 1L,
         )
 
-        val merged = syncService.mergeMangaLists(
+        val merged = syncMerger.mergeMangaLists(
             localMangaList = emptyList(),
             remoteMangaList = listOf(remoteManga),
             localCategories = emptyList(),
@@ -179,7 +167,7 @@ class SyncServiceTest {
     fun testMergeMangaLists_firstSyncKeepsLocalManga() {
         every { lastSyncTimestampPref.get() } returns 0L // never synced before
 
-        val merged = syncService.mergeMangaLists(
+        val merged = syncMerger.mergeMangaLists(
             localMangaList = listOf(
                 BackupManga(
                     source = 1L,
@@ -218,7 +206,7 @@ class SyncServiceTest {
             version = 1L,
         )
 
-        val merged = syncService.mergeMangaLists(
+        val merged = syncMerger.mergeMangaLists(
             localMangaList = listOf(localManga),
             remoteMangaList = listOf(remoteManga),
             localCategories = emptyList(),
@@ -253,7 +241,7 @@ class SyncServiceTest {
             ),
         )
 
-        val merged = syncService.mergeChapters(
+        val merged = syncMerger.mergeChapters(
             localChapters = localChapters,
             remoteChapters = emptyList(),
             lastSyncTime = LAST_SYNC_SECONDS,
@@ -271,7 +259,7 @@ class SyncServiceTest {
      */
     @Test
     fun testMergeChapters_localChaptersDroppedWhenDeletedOnRemote() {
-        val merged = syncService.mergeChapters(
+        val merged = syncMerger.mergeChapters(
             localChapters = listOf(
                 BackupChapter(
                     url = "/manga/1/chapter/gone",
@@ -303,7 +291,7 @@ class SyncServiceTest {
             version = 1L,
         )
 
-        val merged = syncService.mergeChapters(
+        val merged = syncMerger.mergeChapters(
             localChapters = emptyList(),
             remoteChapters = listOf(deletedRemoteChapter, newRemoteChapter),
             lastSyncTime = LAST_SYNC_SECONDS,
@@ -326,7 +314,7 @@ class SyncServiceTest {
             version = 1L,
         )
 
-        val merged = syncService.mergeChapters(
+        val merged = syncMerger.mergeChapters(
             localChapters = emptyList(),
             remoteChapters = listOf(remoteChapter),
             lastSyncTime = lastSyncTime,
@@ -354,7 +342,7 @@ class SyncServiceTest {
             version = 1L,
         )
 
-        val merged = syncService.mergeChapters(
+        val merged = syncMerger.mergeChapters(
             localChapters = listOf(localChapter),
             remoteChapters = listOf(remoteChapter),
             lastSyncTime = LAST_SYNC_SECONDS,
@@ -369,7 +357,7 @@ class SyncServiceTest {
 
     @Test
     fun testMergeChapters_skippedWhenChapterSyncDisabled() {
-        val merged = syncService.mergeChapters(
+        val merged = syncMerger.mergeChapters(
             localChapters = listOf(
                 BackupChapter(url = "/manga/1/chapter/1", name = "Chapter 1", version = 1L),
             ),
@@ -438,7 +426,7 @@ class SyncServiceTest {
             ),
         )
 
-        val result = syncService.mergeSyncData(localSyncData, remoteSyncData)
+        val result = syncMerger.mergeSyncData(localSyncData, remoteSyncData)
         val mergedBackup = result.backup.shouldNotBeNull()
 
         mergedBackup.backupManga shouldHaveSize 2
