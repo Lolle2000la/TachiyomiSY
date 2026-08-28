@@ -1,9 +1,14 @@
 -- Backfill timestamps for rows created before the insert statements started stamping their own
 -- (https://github.com/jobobby04/TachiyomiSY/issues/1635). A zero timestamp made an entry that was
--- never opened look older than the last sync, so the sync merge dropped it.
-UPDATE mangas SET last_modified_at = strftime('%s', 'now') WHERE last_modified_at = 0;
+-- never opened look older than the last sync, so the sync merge dropped it. Derive the value from
+-- the row's creation time (date_added/date_fetch, both epoch millis) instead of "now": entries
+-- that predate the last sync keep their stale status, so deletions from another device still
+-- propagate after the update. The trade-off is that entries the old bug already dropped from the
+-- payload and that predate the last sync stay dropped until the row is touched again (opening the
+-- entry or the next library update suffices); rows with a zero creation time stay zero.
+UPDATE mangas SET last_modified_at = date_added / 1000 WHERE last_modified_at = 0;
 UPDATE mangas SET favorite_modified_at = strftime('%s', 'now') WHERE favorite = 1 AND favorite_modified_at IS NULL;
-UPDATE chapters SET last_modified_at = strftime('%s', 'now') WHERE last_modified_at = 0;
+UPDATE chapters SET last_modified_at = date_fetch / 1000 WHERE last_modified_at = 0;
 
 -- The timestamps above are kept up to date by the insert statements in mangas.sq/chapters.sq, not
 -- by AFTER INSERT triggers: a trigger that issues an UPDATE is chained into the unconditional
