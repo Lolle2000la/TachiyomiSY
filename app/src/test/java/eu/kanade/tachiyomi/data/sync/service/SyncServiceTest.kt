@@ -17,6 +17,18 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import tachiyomi.core.common.preference.Preference
 
+/**
+ * Tests for the merge rules in [SyncService].
+ *
+ * Units: `SyncPreferences.lastSyncTimestamp` stores milliseconds, while `lastModifiedAt` on the
+ * backup models is in seconds (it mirrors the `last_modified_at` column, which is written with
+ * `strftime('%s', 'now')`). The [LAST_SYNC_MILLIS] constant below is therefore converted to seconds
+ * when asserting on entry timestamps.
+ *
+ * The "kept" cases for entries that only one side has deliberately use timestamps that are newer
+ * than the last sync, because that is what mangas.sq/chapters.sq guarantee: every insert stamps
+ * `last_modified_at`. See https://github.com/jobobby04/TachiyomiSY/issues/1635.
+ */
 class SyncServiceTest {
 
     private lateinit var syncPreferences: SyncPreferences
@@ -51,20 +63,19 @@ class SyncServiceTest {
 
     /**
      * Regression test for https://github.com/jobobby04/TachiyomiSY/issues/1635
-     * Newly added local manga (with lastModifiedAt == 0 or older than lastSyncTime)
-     * must NOT be dropped during merge when remote does not have it.
+     * A manga that was added locally after the last sync must survive the merge even though the
+     * remote does not know it yet.
      */
     @Test
     fun testMergeMangaLists_localMangaPreservedWhenNotOnRemote() {
-        // Last sync was at 1000 seconds (1,000,000 ms)
-        every { lastSyncTimestampPref.get() } returns 1_000_000L
+        every { lastSyncTimestampPref.get() } returns LAST_SYNC_MILLIS
 
         val localManga = BackupManga(
             source = 1L,
             url = "/manga/1",
-            title = "Newly Saved Manga",
+            title = "Newly Added Manga",
             favorite = true,
-            lastModifiedAt = 0L, // uninitialized or newly added
+            lastModifiedAt = JUST_ADDED, // stamped by the insert, newer than the last sync
             version = 1L,
         )
 
@@ -78,55 +89,76 @@ class SyncServiceTest {
 
         merged shouldHaveSize 1
         merged.first().url shouldBe "/manga/1"
-        merged.first().title shouldBe "Newly Saved Manga"
+        merged.first().title shouldBe "Newly Added Manga"
     }
 
     /**
-     * Regression test for https://github.com/jobobby04/TachiyomiSY/issues/1635
-     * Newly fetched local chapters (with lastModifiedAt == 0 or older than lastSyncTime)
-     * must NOT be dropped during merge when remote does not have them.
+     * An entry that has not been touched since the last sync but is gone from the remote was
+     * deleted on the other device, so the deletion has to propagate. Without this rule deleted
+     * entries are resurrected on every sync.
      */
     @Test
-    fun testMergeChapters_localChaptersPreservedWhenNotOnRemote() {
-        // Last sync was at 1000 seconds
-        val lastSyncTime = 1000L
+    fun testMergeMangaLists_localMangaDroppedWhenDeletedOnRemote() {
+        every { lastSyncTimestampPref.get() } returns LAST_SYNC_MILLIS
 
-        val localChapters = listOf(
-            BackupChapter(
-                url = "/manga/1/chapter/1",
-                name = "Chapter 1",
-                lastModifiedAt = 0L,
-                version = 1L,
-            ),
-            BackupChapter(
-                url = "/manga/1/chapter/2",
-                name = "Chapter 2",
-                lastModifiedAt = 500L, // older than lastSyncTime
-                version = 1L,
-            ),
+        val staleLocalManga = BackupManga(
+            source = 1L,
+            url = "/manga/1",
+            title = "Manga Deleted On The Other Device",
+            favorite = true,
+            lastModifiedAt = BEFORE_LAST_SYNC,
+            version = 1L,
         )
 
-        val merged = syncService.mergeChapters(
-            localChapters = localChapters,
-            remoteChapters = emptyList(),
-            lastSyncTime = lastSyncTime,
-            syncingChapters = true,
+        val merged = syncService.mergeMangaLists(
+            localMangaList = listOf(staleLocalManga),
+            remoteMangaList = emptyList(),
+            localCategories = emptyList(),
+            remoteCategories = emptyList(),
+            mergedCategories = emptyList(),
         )
 
-        merged shouldHaveSize 2
-        merged.map { it.url } shouldBe listOf("/manga/1/chapter/1", "/manga/1/chapter/2")
+        merged shouldHaveSize 0
+    }
+
+    /**
+     * Symmetric to the case above: an entry that only the remote has and that predates the last
+     * sync was deleted locally, so it must not be pulled back in.
+     */
+    @Test
+    fun testMergeMangaLists_staleRemoteMangaDroppedWhenDeletedLocally() {
+        every { lastSyncTimestampPref.get() } returns LAST_SYNC_MILLIS
+
+        val merged = syncService.mergeMangaLists(
+            localMangaList = emptyList(),
+            remoteMangaList = listOf(
+                BackupManga(
+                    source = 1L,
+                    url = "/manga/2",
+                    title = "Deleted Locally",
+                    favorite = true,
+                    lastModifiedAt = BEFORE_LAST_SYNC,
+                    version = 1L,
+                ),
+            ),
+            localCategories = emptyList(),
+            remoteCategories = emptyList(),
+            mergedCategories = emptyList(),
+        )
+
+        merged shouldHaveSize 0
     }
 
     @Test
     fun testMergeMangaLists_remoteMangaPreservedWhenNotOnLocal() {
-        every { lastSyncTimestampPref.get() } returns 1_000_000L
+        every { lastSyncTimestampPref.get() } returns LAST_SYNC_MILLIS
 
         val remoteManga = BackupManga(
             source = 1L,
             url = "/manga/2",
             title = "Remote Manga",
             favorite = true,
-            lastModifiedAt = 500L,
+            lastModifiedAt = JUST_ADDED, // added on the other device after our last sync
             version = 1L,
         )
 
@@ -141,6 +173,30 @@ class SyncServiceTest {
         merged shouldHaveSize 1
         merged.first().url shouldBe "/manga/2"
         merged.first().title shouldBe "Remote Manga"
+    }
+
+    @Test
+    fun testMergeMangaLists_firstSyncKeepsLocalManga() {
+        every { lastSyncTimestampPref.get() } returns 0L // never synced before
+
+        val merged = syncService.mergeMangaLists(
+            localMangaList = listOf(
+                BackupManga(
+                    source = 1L,
+                    url = "/manga/1",
+                    title = "Pre-existing Manga",
+                    favorite = true,
+                    lastModifiedAt = 0L, // migrated over before insert stamping existed
+                    version = 1L,
+                ),
+            ),
+            remoteMangaList = emptyList(),
+            localCategories = emptyList(),
+            remoteCategories = emptyList(),
+            mergedCategories = emptyList(),
+        )
+
+        merged shouldHaveSize 1
     }
 
     @Test
@@ -175,10 +231,65 @@ class SyncServiceTest {
         merged.first().version shouldBe 2L
     }
 
+    /**
+     * Regression test for https://github.com/jobobby04/TachiyomiSY/issues/1635
+     * Chapters fetched locally after the last sync (new manga or a source that gained chapters)
+     * must NOT be dropped during merge when the remote does not have them yet.
+     */
+    @Test
+    fun testMergeChapters_localChaptersPreservedWhenNotOnRemote() {
+        val localChapters = listOf(
+            BackupChapter(
+                url = "/manga/1/chapter/1",
+                name = "Chapter 1",
+                lastModifiedAt = JUST_ADDED, // stamped by the insert
+                version = 1L,
+            ),
+            BackupChapter(
+                url = "/manga/1/chapter/2",
+                name = "Chapter 2",
+                lastModifiedAt = JUST_ADDED + 1,
+                version = 1L,
+            ),
+        )
+
+        val merged = syncService.mergeChapters(
+            localChapters = localChapters,
+            remoteChapters = emptyList(),
+            lastSyncTime = LAST_SYNC_SECONDS,
+            syncingChapters = true,
+        )
+
+        merged shouldHaveSize 2
+        merged.map { it.url } shouldBe listOf("/manga/1/chapter/1", "/manga/1/chapter/2")
+    }
+
+    /**
+     * Chapters removed by the other device (e.g. a source that dropped or renumbered a chapter via
+     * SyncChaptersWithSource) have no tombstone, so the timestamp comparison is the only thing that
+     * propagates the deletion.
+     */
+    @Test
+    fun testMergeChapters_localChaptersDroppedWhenDeletedOnRemote() {
+        val merged = syncService.mergeChapters(
+            localChapters = listOf(
+                BackupChapter(
+                    url = "/manga/1/chapter/gone",
+                    name = "Removed On The Other Device",
+                    lastModifiedAt = BEFORE_LAST_SYNC,
+                    version = 1L,
+                ),
+            ),
+            remoteChapters = emptyList(),
+            lastSyncTime = LAST_SYNC_SECONDS,
+            syncingChapters = true,
+        )
+
+        merged shouldHaveSize 0
+    }
+
     @Test
     fun testMergeChapters_remoteTombstoneDetection() {
-        val lastSyncTime = 1000L
-
         val deletedRemoteChapter = BackupChapter(
             url = "/manga/1/chapter/deleted",
             name = "Deleted Chapter",
@@ -195,7 +306,7 @@ class SyncServiceTest {
         val merged = syncService.mergeChapters(
             localChapters = emptyList(),
             remoteChapters = listOf(deletedRemoteChapter, newRemoteChapter),
-            lastSyncTime = lastSyncTime,
+            lastSyncTime = LAST_SYNC_SECONDS,
             syncingChapters = true,
         )
 
@@ -228,8 +339,6 @@ class SyncServiceTest {
 
     @Test
     fun testMergeChapters_versionComparisonKeepsHigherVersion() {
-        val lastSyncTime = 1000L
-
         val localChapter = BackupChapter(
             url = "/manga/1/chapter/1",
             name = "Chapter 1",
@@ -248,7 +357,7 @@ class SyncServiceTest {
         val merged = syncService.mergeChapters(
             localChapters = listOf(localChapter),
             remoteChapters = listOf(remoteChapter),
-            lastSyncTime = lastSyncTime,
+            lastSyncTime = LAST_SYNC_SECONDS,
             syncingChapters = true,
         )
 
@@ -259,19 +368,38 @@ class SyncServiceTest {
     }
 
     @Test
+    fun testMergeChapters_skippedWhenChapterSyncDisabled() {
+        val merged = syncService.mergeChapters(
+            localChapters = listOf(
+                BackupChapter(url = "/manga/1/chapter/1", name = "Chapter 1", version = 1L),
+            ),
+            remoteChapters = listOf(
+                BackupChapter(url = "/manga/1/chapter/2", name = "Chapter 2", version = 1L),
+            ),
+            lastSyncTime = LAST_SYNC_SECONDS,
+            syncingChapters = false,
+        )
+
+        // Remote chapters are handed back untouched when chapter sync is off
+        merged shouldHaveSize 1
+        merged.first().url shouldBe "/manga/1/chapter/2"
+    }
+
+    @Test
     fun testMergeSyncData_fullMerge() {
-        every { lastSyncTimestampPref.get() } returns 1_000_000L
+        every { lastSyncTimestampPref.get() } returns LAST_SYNC_MILLIS
 
         val localManga = BackupManga(
             source = 1L,
             url = "/manga/local",
             title = "Local Manga",
             favorite = true,
+            lastModifiedAt = JUST_ADDED,
             chapters = listOf(
                 BackupChapter(
                     url = "/manga/local/c1",
                     name = "Chapter 1",
-                    lastModifiedAt = 0L,
+                    lastModifiedAt = JUST_ADDED, // stamped by the insert
                     version = 1L,
                 ),
             ),
@@ -281,6 +409,7 @@ class SyncServiceTest {
             url = "/manga/remote",
             title = "Remote Manga",
             favorite = true,
+            lastModifiedAt = 2000L,
             chapters = listOf(
                 BackupChapter(
                     url = "/manga/remote/c1",
@@ -314,5 +443,19 @@ class SyncServiceTest {
 
         mergedBackup.backupManga shouldHaveSize 2
         mergedBackup.backupCategories shouldHaveSize 2
+        // The locally added manga and its chapter survive the merge
+        mergedBackup.backupManga.first { it.url == "/manga/local" }.chapters shouldHaveSize 1
+    }
+
+    private companion object {
+        /** The last successful sync, 1,000 s after the epoch, stored in milliseconds. */
+        const val LAST_SYNC_MILLIS = 1_000_000L
+        const val LAST_SYNC_SECONDS = 1_000L
+
+        /** Newer than [LAST_SYNC_SECONDS]: what mangas.sq/chapters.sq stamp on a fresh insert. */
+        const val JUST_ADDED = 1_500L
+
+        /** Older than [LAST_SYNC_SECONDS]: untouched since the last sync. */
+        const val BEFORE_LAST_SYNC = 500L
     }
 }

@@ -1,21 +1,35 @@
+-- Backfill timestamps for rows created before the insert statements started stamping their own
+-- (https://github.com/jobobby04/TachiyomiSY/issues/1635). A zero timestamp made an entry that was
+-- never opened look older than the last sync, so the sync merge dropped it.
 UPDATE mangas SET last_modified_at = strftime('%s', 'now') WHERE last_modified_at = 0;
 UPDATE mangas SET favorite_modified_at = strftime('%s', 'now') WHERE favorite = 1 AND favorite_modified_at IS NULL;
 UPDATE chapters SET last_modified_at = strftime('%s', 'now') WHERE last_modified_at = 0;
 
-CREATE TRIGGER insert_manga_last_modified_at AFTER INSERT ON mangas
-BEGIN
-    UPDATE mangas
-    SET last_modified_at = CASE WHEN last_modified_at = 0 THEN strftime('%s', 'now') ELSE last_modified_at END,
-        favorite_modified_at = CASE WHEN favorite = 1 AND favorite_modified_at IS NULL THEN strftime('%s', 'now') ELSE favorite_modified_at END
-    WHERE _id = new._id;
+-- The timestamps above are kept up to date by the insert statements in mangas.sq/chapters.sq, not
+-- by AFTER INSERT triggers: a trigger that issues an UPDATE is chained into the unconditional
+-- update_last_modified_at_mangas/update_last_modified_at_chapters triggers, which overwrite the
+-- inserted value anyway. Drop the ones added on this branch so every database ends up identical.
+DROP TRIGGER IF EXISTS insert_manga_last_modified_at;
+DROP TRIGGER IF EXISTS insert_chapter_last_modified_at;
+
+-- Apply the string-literal quoting fix from categories.sq to existing databases: the previous
+-- RAISE(ABORT, "...") form only worked because SQLite accepts double quoted strings as a fallback.
+-- Without this statement the fix would only apply to fresh installs.
+DROP TRIGGER IF EXISTS system_category_delete_trigger;
+CREATE TRIGGER IF NOT EXISTS system_category_delete_trigger BEFORE DELETE
+ON categories
+BEGIN SELECT CASE
+    WHEN old._id <= 0 THEN
+        RAISE(ABORT, 'System category can''t be deleted')
+    END;
 END;
 
-CREATE TRIGGER insert_chapter_last_modified_at AFTER INSERT ON chapters
-BEGIN
-    UPDATE chapters
-    SET last_modified_at = CASE WHEN last_modified_at = 0 THEN strftime('%s', 'now') ELSE last_modified_at END
-    WHERE _id = new._id;
-END;
-
-ALTER TABLE mangas_categories DROP COLUMN last_modified_at;
-DROP TRIGGER IF EXISTS update_last_modified_at_mangas_categories;
+-- NOTE: mangas_categories.last_modified_at and its update_last_modified_at_mangas_categories
+-- trigger are intentionally *not* dropped here. 28.sqm added them to databases that already
+-- existed, but cdb07c893 later removed them from mangas_categories.sq without a matching
+-- migration, so the column only exists on databases that were upgraded through version 28.
+-- Databases created fresh since then have no such column, and `ALTER TABLE ... DROP COLUMN`
+-- fails with "no such column" on those, which aborts the whole migration and leaves the app
+-- unable to open its database. Nothing reads the column (no query, view or trigger in the
+-- current schema references it), so it is harmless leftover; cleaning it up needs the table
+-- rebuild pattern instead.

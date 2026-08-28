@@ -38,15 +38,11 @@ CREATE INDEX library_favorite_index ON mangas(favorite) WHERE favorite = 1;
 CREATE INDEX mangas_url_index ON mangas(url);
 CREATE INDEX idx_mangas_source ON mangas(source);
 
--- Initialize timestamps on insert if not provided (https://github.com/jobobby04/TachiyomiSY/issues/1635)
-CREATE TRIGGER insert_manga_last_modified_at AFTER INSERT ON mangas
-BEGIN
-    UPDATE mangas
-    SET last_modified_at = CASE WHEN last_modified_at = 0 THEN strftime('%s', 'now') ELSE last_modified_at END,
-        favorite_modified_at = CASE WHEN favorite = 1 AND favorite_modified_at IS NULL THEN strftime('%s', 'now') ELSE favorite_modified_at END
-    WHERE _id = new._id;
-END;
-
+-- `last_modified_at` / `favorite_modified_at` are initialized by the insert statements below
+-- (`insertReturningId`, `insertNetworkManga`) rather than by an AFTER INSERT trigger: a trigger that
+-- issues an UPDATE is chained into the unconditional `update_last_modified_at_mangas` trigger below,
+-- which would overwrite whatever value was inserted.
+-- See https://github.com/jobobby04/TachiyomiSY/issues/1635.
 CREATE TRIGGER update_last_favorited_at_mangas
 AFTER UPDATE OF favorite ON mangas
 BEGIN
@@ -209,8 +205,8 @@ AND _id NOT IN (
 );
 
 insertReturningId:
-INSERT INTO mangas(source, url, artist, author, description, genre, title, status, thumbnail_url, favorite, last_update, next_update, initialized, viewer, chapter_flags, cover_last_modified, date_added, update_strategy, calculate_interval, last_modified_at, version, notes, memo)
-VALUES (:source, :url, :artist, :author, :description, :genre, :title, :status, :thumbnailUrl, :favorite, :lastUpdate, :nextUpdate, :initialized, :viewerFlags, :chapterFlags, :coverLastModified, :dateAdded, :updateStrategy, :calculateInterval, 0, :version, :notes, :memo)
+INSERT INTO mangas(source, url, artist, author, description, genre, title, status, thumbnail_url, favorite, last_update, next_update, initialized, viewer, chapter_flags, cover_last_modified, date_added, update_strategy, calculate_interval, last_modified_at, favorite_modified_at, version, notes, memo)
+VALUES (:source, :url, :artist, :author, :description, :genre, :title, :status, :thumbnailUrl, :favorite, :lastUpdate, :nextUpdate, :initialized, :viewerFlags, :chapterFlags, :coverLastModified, :dateAdded, :updateStrategy, :calculateInterval, strftime('%s', 'now'), CASE WHEN :favorite THEN strftime('%s', 'now') ELSE NULL END, :version, :notes, :memo)
 RETURNING _id;
 
 update:
@@ -245,12 +241,12 @@ insertNetworkManga {
     INSERT INTO mangas(
         source, url, artist, author, description, genre, title, status, thumbnail_url, favorite,
         last_update, next_update, initialized, viewer, chapter_flags, cover_last_modified, date_added,
-        update_strategy, calculate_interval, last_modified_at, version, memo
+        update_strategy, calculate_interval, last_modified_at, favorite_modified_at, version, memo
     )
     SELECT
         :source, :url, :artist, :author, :description, :genre, :title, :status, :thumbnailUrl, :favorite,
         :lastUpdate, :nextUpdate, :initialized, :viewerFlags, :chapterFlags, :coverLastModified, :dateAdded,
-        :updateStrategy, :calculateInterval, 0, :version, :memo
+        :updateStrategy, :calculateInterval, strftime('%s', 'now'), CASE WHEN :favorite THEN strftime('%s', 'now') ELSE NULL END, :version, :memo
     WHERE NOT EXISTS(SELECT 0 FROM mangas WHERE source = :source AND url = :url);
 
     -- Update the relevant details if applicable and not favorite

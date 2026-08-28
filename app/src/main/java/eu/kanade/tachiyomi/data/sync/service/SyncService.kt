@@ -37,6 +37,8 @@ abstract class SyncService(
      * @param remoteSyncData The SData containing the remote sync data.
      * @return The JSON string containing the merged sync data.
      */
+    // `internal` (instead of `protected`/`private`) so the merge rules can be unit tested directly,
+    // see SyncServiceTest.
     internal fun mergeSyncData(localSyncData: SyncData, remoteSyncData: SyncData): SyncData {
         val mergedCategoriesList =
             mergeCategoriesLists(localSyncData.backup?.backupCategories, remoteSyncData.backup?.backupCategories)
@@ -137,16 +139,30 @@ abstract class SyncService(
             val local = localMangaMap[compositeKey]
             val remote = remoteMangaMap[compositeKey]
 
-            // Retain local manga not yet on remote and remote manga not yet local (https://github.com/jobobby04/TachiyomiSY/issues/1635).
-            // Deletions/unfavorites are tracked explicitly via `favorite = false` and reconciled during version comparison.
+            // An entry that only one side has is either newly added on that side (keep) or it was
+            // deleted on the other side (drop). `lastModifiedAt > lastSyncTime` tells the two apart,
+            // and it is only reliable because mangas.sq stamps `last_modified_at` on insert: an entry
+            // added since the last sync always carries a newer timestamp. Before that stamping
+            // existed such entries carried 0 and were dropped, see
+            // https://github.com/jobobby04/TachiyomiSY/issues/1635.
             when {
                 local != null && remote == null -> {
-                    updateCategories(local, localCategoriesMapByOrder)
-                    local
+                    if (lastSyncTime == 0L || local.lastModifiedAt > lastSyncTime) {
+                        updateCategories(local, localCategoriesMapByOrder)
+                        local
+                    } else {
+                        logcat(LogPriority.INFO, logTag) { "Dropping local manga deleted on remote: ${local.title}." }
+                        null
+                    }
                 }
                 local == null && remote != null -> {
-                    updateCategories(remote, remoteCategoriesMapByOrder)
-                    remote
+                    if (lastSyncTime == 0L || remote.lastModifiedAt > lastSyncTime) {
+                        updateCategories(remote, remoteCategoriesMapByOrder)
+                        remote
+                    } else {
+                        logcat(LogPriority.INFO, logTag) { "Dropping deleted remote manga: ${remote.title}." }
+                        null
+                    }
                 }
                 local != null && remote != null -> {
                     // Compare versions to decide which manga to keep
@@ -222,8 +238,11 @@ abstract class SyncService(
         }
 
         // Merge both chapter maps based on version numbers.
-        // Local chapters not yet on remote are always kept (e.g. newly added manga or source updates, issue #1635).
-        // Remote chapters missing locally are only kept if newly added after lastSyncTime (tombstone detection).
+        // A chapter only one side has is either newly added there or it was deleted on the other
+        // side; `lastSyncTime` is what tells the two apart. This relies on chapters.sq stamping
+        // `last_modified_at` on insert, which is the fix for
+        // https://github.com/jobobby04/TachiyomiSY/issues/1635 - without it a freshly fetched
+        // chapter carried 0 here and was dropped as if it had been deleted remotely.
         val mergedChapters = (localChapterMap.keys + remoteChapterMap.keys).distinct().mapNotNull { compositeKey ->
             val localChapter = localChapterMap[compositeKey]
             val remoteChapter = remoteChapterMap[compositeKey]
@@ -235,15 +254,20 @@ abstract class SyncService(
 
             when {
                 localChapter != null && remoteChapter == null -> {
-                    logcat(LogPriority.DEBUG, logTag) { "Keeping local chapter: ${localChapter.name}." }
-                    localChapter
+                    if (lastSyncTime == 0L || localChapter.lastModifiedAt > lastSyncTime) {
+                        logcat(LogPriority.DEBUG, logTag) { "Keeping local chapter: ${localChapter.name}." }
+                        localChapter
+                    } else {
+                        logcat(LogPriority.INFO, logTag) { "Dropping local chapter deleted on remote: ${localChapter.name}." }
+                        null
+                    }
                 }
                 localChapter == null && remoteChapter != null -> {
                     if (lastSyncTime == 0L || remoteChapter.lastModifiedAt > lastSyncTime) {
                         logcat(LogPriority.DEBUG, logTag) { "Taking remote chapter: ${remoteChapter.name}." }
                         remoteChapter
                     } else {
-                        logcat(LogPriority.DEBUG, logTag) { "Dropping deleted remote chapter: ${remoteChapter.name}." }
+                        logcat(LogPriority.INFO, logTag) { "Dropping deleted remote chapter: ${remoteChapter.name}." }
                         null
                     }
                 }
